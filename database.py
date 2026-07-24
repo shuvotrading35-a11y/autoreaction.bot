@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import aiosqlite
-from contextlib import asynccontextmanager
 
 from config import DATABASE_PATH, DATABASE_BACKUP_PATH, DEFAULT_EMOJIS
 
@@ -23,17 +22,17 @@ logger = logging.getLogger(__name__)
 _db_lock = asyncio.Lock()
 
 
-@asynccontextmanager
-async def get_db():
+async def get_db() -> aiosqlite.Connection:
+    """
+    Open and return a new aiosqlite connection with row_factory set
+    so rows behave like dicts.
+    """
     conn = await aiosqlite.connect(DATABASE_PATH)
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.execute("PRAGMA synchronous=NORMAL")
-    try:
-        yield conn
-    finally:
-        await conn.close()
+    return conn
 
 
 # ─── Schema Initialisation ────────────────────────────────────────────────────
@@ -191,6 +190,8 @@ async def init_db() -> None:
             )
 
         # ── Seed default emojis ───────────────────────────────────────────
+        # প্রতিবার startup এ পুরনো invalid emoji মুছে valid emoji দিয়ে replace করে
+        await db.execute("DELETE FROM emojis")
         for emoji_data in DEFAULT_EMOJIS:
             await db.execute(
                 """
