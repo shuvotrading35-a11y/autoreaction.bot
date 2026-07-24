@@ -1,0 +1,15 @@
+# ─── Core Bot Framework ──────────────────────────────────────────────────────
+python-telegram-bot[job-queue]==22.1
+
+# ─── Async SQLite ─────────────────────────────────────────────────────────────
+aiosqlite==0.20.0
+
+# ─── Environment Variables ────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ─── System Metrics ───────────────────────────────────────────────────────────
+psutil==6.1.1
+
+# ─── HTTP Client (used internally by python-telegram-bot) ────────────────────
+httpx==0.27.2
+httpcore==1.0.6
