@@ -114,6 +114,9 @@ async def _send_reaction_with_retry(
                     "message to react not found",
                     "message not found",
                     "reactions are not supported",
+                    "reaction_invalid",
+                    "invalid reaction",
+                    "reactioninvalid",
                 )
             ):
                 logger.warning(
