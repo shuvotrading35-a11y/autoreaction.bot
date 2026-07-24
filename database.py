@@ -6,9 +6,10 @@ Handles all async SQLite operations with parameterized queries.
 import asyncio
 import logging
 import shutil
-from datetime import date, datetime
+from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import aiosqlite
 
@@ -17,30 +18,31 @@ from config import DATABASE_PATH, DATABASE_BACKUP_PATH, DEFAULT_EMOJIS
 logger = logging.getLogger(__name__)
 
 
-# ─── Connection Pool ──────────────────────────────────────────────────────────
+# ─── Context Manager Connection ───────────────────────────────────────────────
 
-_db_lock = asyncio.Lock()
-
-
-async def get_db() -> aiosqlite.Connection:
+@asynccontextmanager
+async def get_db():
     """
-    Open and return a new aiosqlite connection with row_factory set
-    so rows behave like dicts.
+    Async context manager that opens an aiosqlite connection,
+    yields it, and closes it on exit.
+    Usage: async with get_db() as db: ...
     """
     conn = await aiosqlite.connect(DATABASE_PATH)
     conn.row_factory = aiosqlite.Row
-    await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute("PRAGMA foreign_keys=ON")
-    await conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+    try:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA foreign_keys=ON")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        yield conn
+    finally:
+        await conn.close()
 
 
 # ─── Schema Initialisation ────────────────────────────────────────────────────
 
 async def init_db() -> None:
     """
-    Create all required tables if they do not already exist
-    and seed default data.
+    Create all required tables and seed default data on every startup.
     """
     async with get_db() as db:
         # ── users ──────────────────────────────────────────────────────────
@@ -163,11 +165,11 @@ async def init_db() -> None:
         # ── force_join ─────────────────────────────────────────────────────
         await db.execute("""
             CREATE TABLE IF NOT EXISTS force_join (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id  INTEGER NOT NULL UNIQUE,
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id       INTEGER NOT NULL UNIQUE,
                 channel_username TEXT,
-                invite_link TEXT,
-                added_at    TEXT DEFAULT (datetime('now'))
+                invite_link      TEXT,
+                added_at         TEXT DEFAULT (datetime('now'))
             )
         """)
 
@@ -175,13 +177,13 @@ async def init_db() -> None:
 
         # ── Seed default settings ─────────────────────────────────────────
         defaults = {
-            "auto_reaction": "1",
-            "random_emoji": "1",
-            "big_reaction": "0",
-            "reaction_delay": "0.5",
-            "maintenance": "0",
-            "force_join": "0",
-            "logging_enabled": "1",
+            "auto_reaction":    "1",
+            "random_emoji":     "1",
+            "big_reaction":     "0",
+            "reaction_delay":   "0.5",
+            "maintenance":      "0",
+            "force_join":       "0",
+            "logging_enabled":  "1",
         }
         for key, value in defaults.items():
             await db.execute(
@@ -189,8 +191,7 @@ async def init_db() -> None:
                 (key, value),
             )
 
-        # ── Seed default emojis ───────────────────────────────────────────
-        # প্রতিবার startup এ পুরনো invalid emoji মুছে valid emoji দিয়ে replace করে
+        # ── Seed emojis — delete old invalid ones, insert fresh valid set ─
         await db.execute("DELETE FROM emojis")
         for emoji_data in DEFAULT_EMOJIS:
             await db.execute(
@@ -250,10 +251,7 @@ async def upsert_user(
     first_name: str,
     last_name: Optional[str],
 ) -> bool:
-    """
-    Insert or update a user record.
-    Returns True if this is a new user.
-    """
+    """Insert or update a user. Returns True if new user."""
     async with get_db() as db:
         async with db.execute(
             "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
@@ -273,10 +271,7 @@ async def upsert_user(
             return False
         else:
             await db.execute(
-                """
-                INSERT INTO users (user_id, username, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-                """,
+                "INSERT INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
                 (user_id, username, first_name, last_name),
             )
             await db.commit()
@@ -323,8 +318,7 @@ async def get_today_users() -> int:
     today = date.today().isoformat()
     async with get_db() as db:
         async with db.execute(
-            "SELECT COUNT(*) AS cnt FROM users WHERE DATE(joined_at) = ?",
-            (today,),
+            "SELECT COUNT(*) AS cnt FROM users WHERE DATE(joined_at) = ?", (today,)
         ) as cursor:
             row = await cursor.fetchone()
             return row["cnt"] if row else 0
@@ -333,7 +327,7 @@ async def get_today_users() -> int:
 # ─── Groups ───────────────────────────────────────────────────────────────────
 
 async def upsert_group(chat_id: int, title: str, username: Optional[str]) -> bool:
-    """Insert or update a group record. Returns True if new."""
+    """Insert or update a group. Returns True if new."""
     async with get_db() as db:
         async with db.execute(
             "SELECT chat_id FROM groups WHERE chat_id = ?", (chat_id,)
@@ -372,7 +366,7 @@ async def get_all_groups() -> list[dict]:
 
 
 async def get_total_groups() -> int:
-    """Return total group count."""
+    """Return total active group count."""
     async with get_db() as db:
         async with db.execute(
             "SELECT COUNT(*) AS cnt FROM groups WHERE is_active = 1"
@@ -382,7 +376,7 @@ async def get_total_groups() -> int:
 
 
 async def deactivate_group(chat_id: int) -> None:
-    """Mark a group as inactive (bot removed)."""
+    """Mark a group as inactive."""
     async with get_db() as db:
         await db.execute(
             "UPDATE groups SET is_active = 0 WHERE chat_id = ?", (chat_id,)
@@ -393,7 +387,7 @@ async def deactivate_group(chat_id: int) -> None:
 # ─── Channels ─────────────────────────────────────────────────────────────────
 
 async def upsert_channel(chat_id: int, title: str, username: Optional[str]) -> bool:
-    """Insert or update a channel record. Returns True if new."""
+    """Insert or update a channel. Returns True if new."""
     async with get_db() as db:
         async with db.execute(
             "SELECT chat_id FROM channels WHERE chat_id = ?", (chat_id,)
@@ -432,7 +426,7 @@ async def get_all_channels() -> list[dict]:
 
 
 async def get_total_channels() -> int:
-    """Return total channel count."""
+    """Return total active channel count."""
     async with get_db() as db:
         async with db.execute(
             "SELECT COUNT(*) AS cnt FROM channels WHERE is_active = 1"
@@ -457,8 +451,7 @@ async def get_active_emojis(category: Optional[str] = None) -> list[dict]:
     async with get_db() as db:
         if category:
             async with db.execute(
-                "SELECT * FROM emojis WHERE is_enabled = 1 AND category = ?",
-                (category,),
+                "SELECT * FROM emojis WHERE is_enabled = 1 AND category = ?", (category,)
             ) as cursor:
                 rows = await cursor.fetchall()
         else:
@@ -470,7 +463,7 @@ async def get_active_emojis(category: Optional[str] = None) -> list[dict]:
 
 
 async def get_all_emojis() -> list[dict]:
-    """Return all emojis (including disabled)."""
+    """Return all emojis including disabled."""
     async with get_db() as db:
         async with db.execute("SELECT * FROM emojis ORDER BY weight DESC") as cursor:
             rows = await cursor.fetchall()
@@ -478,22 +471,13 @@ async def get_all_emojis() -> list[dict]:
 
 
 async def add_emoji(
-    emoji: str,
-    category: str = "other",
-    weight: int = 1,
-    is_big: bool = False,
+    emoji: str, category: str = "other", weight: int = 1, is_big: bool = False
 ) -> bool:
-    """
-    Add a new emoji to the database.
-    Returns False if emoji already exists.
-    """
+    """Add a new emoji. Returns False if already exists."""
     try:
         async with get_db() as db:
             await db.execute(
-                """
-                INSERT INTO emojis (emoji, category, weight, is_big)
-                VALUES (?, ?, ?, ?)
-                """,
+                "INSERT INTO emojis (emoji, category, weight, is_big) VALUES (?, ?, ?, ?)",
                 (emoji, category, weight, int(is_big)),
             )
             await db.commit()
@@ -503,7 +487,7 @@ async def add_emoji(
 
 
 async def remove_emoji(emoji_id: int) -> bool:
-    """Delete an emoji by ID. Returns False if not found."""
+    """Delete an emoji by ID."""
     async with get_db() as db:
         async with db.execute(
             "SELECT id FROM emojis WHERE id = ?", (emoji_id,)
@@ -517,10 +501,7 @@ async def remove_emoji(emoji_id: int) -> bool:
 
 
 async def toggle_emoji(emoji_id: int) -> Optional[bool]:
-    """
-    Toggle is_enabled for an emoji.
-    Returns the new state (True=enabled), or None if not found.
-    """
+    """Toggle is_enabled. Returns new state or None if not found."""
     async with get_db() as db:
         async with db.execute(
             "SELECT is_enabled FROM emojis WHERE id = ?", (emoji_id,)
@@ -537,7 +518,7 @@ async def toggle_emoji(emoji_id: int) -> Optional[bool]:
 
 
 async def update_emoji_weight(emoji_id: int, weight: int) -> bool:
-    """Update the weight of an emoji."""
+    """Update emoji weight."""
     async with get_db() as db:
         async with db.execute(
             "SELECT id FROM emojis WHERE id = ?", (emoji_id,)
@@ -554,16 +535,11 @@ async def update_emoji_weight(emoji_id: int, weight: int) -> bool:
 
 # ─── Reaction Logs ────────────────────────────────────────────────────────────
 
-async def log_reaction(
-    chat_id: int, message_id: int, emoji: str, is_big: bool
-) -> None:
-    """Store a reaction event in the log."""
+async def log_reaction(chat_id: int, message_id: int, emoji: str, is_big: bool) -> None:
+    """Store a reaction event."""
     async with get_db() as db:
         await db.execute(
-            """
-            INSERT INTO reaction_logs (chat_id, message_id, emoji, is_big)
-            VALUES (?, ?, ?, ?)
-            """,
+            "INSERT INTO reaction_logs (chat_id, message_id, emoji, is_big) VALUES (?, ?, ?, ?)",
             (chat_id, message_id, emoji, int(is_big)),
         )
         await db.commit()
@@ -573,9 +549,7 @@ async def log_reaction(
 async def get_total_reactions() -> int:
     """Return total reactions sent."""
     async with get_db() as db:
-        async with db.execute(
-            "SELECT COUNT(*) AS cnt FROM reaction_logs"
-        ) as cursor:
+        async with db.execute("SELECT COUNT(*) AS cnt FROM reaction_logs") as cursor:
             row = await cursor.fetchone()
             return row["cnt"] if row else 0
 
@@ -585,23 +559,20 @@ async def get_today_reactions() -> int:
     today = date.today().isoformat()
     async with get_db() as db:
         async with db.execute(
-            "SELECT COUNT(*) AS cnt FROM reaction_logs WHERE DATE(reacted_at) = ?",
-            (today,),
+            "SELECT COUNT(*) AS cnt FROM reaction_logs WHERE DATE(reacted_at) = ?", (today,)
         ) as cursor:
             row = await cursor.fetchone()
             return row["cnt"] if row else 0
 
 
 async def get_most_used_emojis(limit: int = 10) -> list[dict]:
-    """Return the top N most used emojis."""
+    """Return top N most used emojis."""
     async with get_db() as db:
         async with db.execute(
             """
             SELECT emoji, COUNT(*) AS usage_count
-            FROM reaction_logs
-            GROUP BY emoji
-            ORDER BY usage_count DESC
-            LIMIT ?
+            FROM reaction_logs GROUP BY emoji
+            ORDER BY usage_count DESC LIMIT ?
             """,
             (limit,),
         ) as cursor:
@@ -610,15 +581,13 @@ async def get_most_used_emojis(limit: int = 10) -> list[dict]:
 
 
 async def get_top_active_chats(limit: int = 10) -> list[dict]:
-    """Return the top N most active chats by reaction count."""
+    """Return top N most active chats."""
     async with get_db() as db:
         async with db.execute(
             """
             SELECT chat_id, COUNT(*) AS reaction_count
-            FROM reaction_logs
-            GROUP BY chat_id
-            ORDER BY reaction_count DESC
-            LIMIT ?
+            FROM reaction_logs GROUP BY chat_id
+            ORDER BY reaction_count DESC LIMIT ?
             """,
             (limit,),
         ) as cursor:
@@ -645,28 +614,20 @@ async def _increment_stat(column: str, amount: int = 1) -> None:
 
 
 async def get_weekly_stats() -> list[dict]:
-    """Return statistics for the last 7 days."""
+    """Return stats for last 7 days."""
     async with get_db() as db:
         async with db.execute(
-            """
-            SELECT * FROM statistics
-            ORDER BY stat_date DESC
-            LIMIT 7
-            """,
+            "SELECT * FROM statistics ORDER BY stat_date DESC LIMIT 7"
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
 
 async def get_monthly_stats() -> list[dict]:
-    """Return statistics for the last 30 days."""
+    """Return stats for last 30 days."""
     async with get_db() as db:
         async with db.execute(
-            """
-            SELECT * FROM statistics
-            ORDER BY stat_date DESC
-            LIMIT 30
-            """,
+            "SELECT * FROM statistics ORDER BY stat_date DESC LIMIT 30"
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
@@ -678,19 +639,14 @@ async def create_broadcast_log(broadcast_type: str, total: int) -> int:
     """Create a broadcast log entry and return its ID."""
     async with get_db() as db:
         cursor = await db.execute(
-            """
-            INSERT INTO broadcast_logs (broadcast_type, total)
-            VALUES (?, ?)
-            """,
+            "INSERT INTO broadcast_logs (broadcast_type, total) VALUES (?, ?)",
             (broadcast_type, total),
         )
         await db.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        return cursor.lastrowid
 
 
-async def update_broadcast_log(
-    log_id: int, success: int, failed: int
-) -> None:
+async def update_broadcast_log(log_id: int, success: int, failed: int) -> None:
     """Update a broadcast log with results."""
     async with get_db() as db:
         await db.execute(
@@ -738,7 +694,9 @@ async def is_chat_banned(chat_id: int) -> bool:
 async def get_banned_chats() -> list[dict]:
     """Return all banned chats."""
     async with get_db() as db:
-        async with db.execute("SELECT * FROM banned_chats ORDER BY banned_at DESC") as cursor:
+        async with db.execute(
+            "SELECT * FROM banned_chats ORDER BY banned_at DESC"
+        ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
@@ -748,14 +706,11 @@ async def get_banned_chats() -> list[dict]:
 async def add_force_join_channel(
     channel_id: int, username: Optional[str], invite_link: Optional[str]
 ) -> bool:
-    """Add a channel to the force-join list. Returns False if already present."""
+    """Add force-join channel. Returns False if already present."""
     try:
         async with get_db() as db:
             await db.execute(
-                """
-                INSERT INTO force_join (channel_id, channel_username, invite_link)
-                VALUES (?, ?, ?)
-                """,
+                "INSERT INTO force_join (channel_id, channel_username, invite_link) VALUES (?, ?, ?)",
                 (channel_id, username, invite_link),
             )
             await db.commit()
@@ -765,7 +720,7 @@ async def add_force_join_channel(
 
 
 async def remove_force_join_channel(channel_id: int) -> bool:
-    """Remove a channel from the force-join list."""
+    """Remove a force-join channel."""
     async with get_db() as db:
         async with db.execute(
             "SELECT id FROM force_join WHERE channel_id = ?", (channel_id,)
@@ -773,9 +728,7 @@ async def remove_force_join_channel(channel_id: int) -> bool:
             row = await cursor.fetchone()
         if not row:
             return False
-        await db.execute(
-            "DELETE FROM force_join WHERE channel_id = ?", (channel_id,)
-        )
+        await db.execute("DELETE FROM force_join WHERE channel_id = ?", (channel_id,))
         await db.commit()
     return True
 
@@ -791,14 +744,11 @@ async def get_force_join_channels() -> list[dict]:
 # ─── Admins ───────────────────────────────────────────────────────────────────
 
 async def add_admin(user_id: int, username: Optional[str], added_by: int) -> bool:
-    """Add a bot admin. Returns False if already an admin."""
+    """Add a bot admin. Returns False if already exists."""
     try:
         async with get_db() as db:
             await db.execute(
-                """
-                INSERT INTO admins (user_id, username, added_by)
-                VALUES (?, ?, ?)
-                """,
+                "INSERT INTO admins (user_id, username, added_by) VALUES (?, ?, ?)",
                 (user_id, username, added_by),
             )
             await db.commit()
@@ -842,7 +792,7 @@ async def get_all_admins() -> list[dict]:
 # ─── Database Utilities ───────────────────────────────────────────────────────
 
 async def backup_database() -> Path:
-    """Copy the database file to the backup path and return the backup path."""
+    """Copy the database to backup path and return it."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         None, shutil.copy2, str(DATABASE_PATH), str(DATABASE_BACKUP_PATH)
@@ -854,12 +804,12 @@ async def backup_database() -> Path:
 async def get_database_size() -> int:
     """Return database file size in bytes."""
     loop = asyncio.get_event_loop()
-    size = await loop.run_in_executor(None, DATABASE_PATH.stat)
-    return size.st_size
+    stat = await loop.run_in_executor(None, DATABASE_PATH.stat)
+    return stat.st_size
 
 
 async def optimize_database() -> None:
-    """Run VACUUM and ANALYZE on the database."""
+    """Run VACUUM and ANALYZE."""
     async with get_db() as db:
         await db.execute("VACUUM")
         await db.execute("ANALYZE")
