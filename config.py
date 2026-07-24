@@ -26,17 +26,35 @@ for _dir in [LOG_DIR, DATABASE_DIR, CACHE_DIR, ASSETS_DIR]:
 
 # ─── Bot Credentials ──────────────────────────────────────────────────────────
 
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 OWNER_ID: int = int(os.getenv("OWNER_ID", "0"))
 DEVELOPER_USERNAME: str = os.getenv("DEVELOPER_USERNAME", "@developer")
-
-if not BOT_TOKEN:
-    logging.critical("BOT_TOKEN is not set. Exiting.")
-    sys.exit(1)
 
 if not OWNER_ID:
     logging.critical("OWNER_ID is not set. Exiting.")
     sys.exit(1)
+
+# ─── Multi-Token Load Balancing (১০টা পর্যন্ত) ───────────────────────────────
+
+BOT_TOKENS: list[str] = []
+for _i in range(1, 11):
+    _token = os.getenv(f"BOT_TOKEN_{_i}", "")
+    if _token:
+        BOT_TOKENS.append(_token)
+
+# Fallback: single BOT_TOKEN support (পুরনো .env এর জন্য)
+if not BOT_TOKENS:
+    _single = os.getenv("BOT_TOKEN", "")
+    if _single:
+        BOT_TOKENS.append(_single)
+
+if not BOT_TOKENS:
+    logging.critical("কোনো BOT_TOKEN পাওয়া যায়নি! .env এ BOT_TOKEN_1 থেকে BOT_TOKEN_10 দাও।")
+    sys.exit(1)
+
+# Primary token (first one) — single-instance fallback
+BOT_TOKEN: str = BOT_TOKENS[0]
+
+logging.info("✅ %d টা Bot Token লোড হয়েছে।", len(BOT_TOKENS))
 
 # ─── Bot Metadata ─────────────────────────────────────────────────────────────
 
@@ -147,19 +165,13 @@ ADD_TO_CHANNEL_LINK: str = ""
 MORE_BOTS_LINK: str = os.getenv("MORE_BOTS_LINK", "https://t.me/")
 HOW_TO_USE_TEXT: str = (
     "📖 <b>How To Use AutoReactionBot</b>\n\n"
-    "1️⃣ <b>Add the Bot to Your Channel or Group</b>\n"
-    "• Add the reaction bot to your Telegram channel or group.\n"
-    "• Grant <b>Admin privileges</b> to ensure it operates smoothly.\n\n"
-    "2️⃣ <b>Enable Reactions in Your Chat</b>\n"
-    "Make sure the following emojis are <b>enabled</b> in your channel/group:\n"
-    "<code>❤️  🥰  😍  😘  👍</code>\n\n"
-    "3️⃣ <b>Automated Reaction Process</b>\n"
-    "• The bot will automatically apply one of these emojis to each message.\n\n"
-    "⚠️ <b>Important Note</b>\n"
-    "The main reason for failed reactions is <b>emoji mismatch</b>.\n"
-    "If the bot tries to react with an emoji that is <b>not enabled</b> "
-    "in your channel or group, the reaction will fail.\n\n"
-    "✅ Make sure the allowed reaction emojis in your chat "
-    "<b>match</b> the emojis configured in the bot.\n\n"
+    "1️⃣ Add the bot to your <b>channel</b> or <b>group</b>.\n"
+    "2️⃣ Grant the bot <b>Admin</b> permissions.\n"
+    "3️⃣ The bot will automatically react to every message! 🎉\n\n"
+    "💡 <b>Tips:</b>\n"
+    "• Use /settings to customise reaction behaviour.\n"
+    "• Use /admin to access the admin panel (owner only).\n"
+    "• Random emoji mode picks a different emoji each time.\n"
+    "• Enable Big Reaction for animated reactions.\n\n"
     "📞 Support: @developer"
 )
