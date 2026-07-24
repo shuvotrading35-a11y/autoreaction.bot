@@ -156,12 +156,18 @@ async def how_to_use_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Show the 'How To Use' help text."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        HOW_TO_USE_TEXT,
-        parse_mode=ParseMode.HTML,
-        reply_markup=back_to_main_keyboard(),
-    )
-
+    try:
+        await query.edit_message_text(
+            HOW_TO_USE_TEXT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_main_keyboard(),
+        )
+    except Exception:
+        await query.message.reply_text(
+            HOW_TO_USE_TEXT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_main_keyboard(),
+        )
 
 # ─── Callback: main_menu ─────────────────────────────────────────────────────
 
