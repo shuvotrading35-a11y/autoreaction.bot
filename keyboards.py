@@ -38,15 +38,15 @@ def main_menu_keyboard(bot_username: str) -> InlineKeyboardMarkup:
 
     buttons = [
         [
-            InlineKeyboardButton("🩵 Add To Channel", url=add_channel),
-            InlineKeyboardButton("🩵 Add To Group", url=add_group),
+            StyledButton("🩵 Add To Channel", style="primary", url=add_channel),
+            StyledButton("🩵 Add To Group",   style="primary", url=add_group),
         ],
         [
             StyledButton("🟢 How To Use", style="success", callback_data="how_to_use"),
-            InlineKeyboardButton("🟢 More Bots", url=MORE_BOTS_LINK),
+            StyledButton("🟢 More Bots",  style="success", url=MORE_BOTS_LINK),
         ],
         [
-            StyledButton("🟠 Admin Panel", style="primary", callback_data="admin_panel"),
+            StyledButton("🟠 Admin Panel", style="danger", callback_data="admin_panel"),
         ],
     ]
     return InlineKeyboardMarkup(buttons)
